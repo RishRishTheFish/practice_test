@@ -16,8 +16,8 @@ fn ask_question() -> String {
 }
 
 // Derive macros so i can compare classifications with other ones, debug it, and clone the data
-// to avoid memory issues (since preformance loss is acceptable)
-#[derive(PartialEq, Debug, Clone)]
+// to avoid memory issues (since preformance loss is acceptable), there is Hash and Eq which I needed to add so I can access the hashmap methods
+#[derive(PartialEq, Hash, Eq, Clone, Debug)]
 /// Classification will take a simple string as a name, and a optional, parent classification which is 
 /// optional for the sake of orphan nodes and when a node is first initilized
 /// and a box for classification so the data can be consistently borrowed as mutable
@@ -71,7 +71,7 @@ impl From<RawBird> for Bird {
 }
 
 /// Macros for PartialEq and Debug for equating a bird with another and printing it out, and Clone for avoiding borrowing issues
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Clone)]
 struct Bird {
     name: String,
     common_name: String,
@@ -92,6 +92,7 @@ impl Bird {
 /// and to better originize certain functions
 struct Collection {
     classifications: Vec<RefCell<Classification>>,
+    classification_tree: HashMap<usize, Vec<Classification>>,
     birds: Vec<Bird>
 }
 /// The implimentation for Collection which will provide a constructer function, while also providing functions
@@ -99,7 +100,17 @@ struct Collection {
 /// and return the refrence (regardless if it existed prior or not)
 impl Collection {
     fn new() -> Collection {
-        Collection { classifications: vec![], birds: vec![] }
+        Collection { classifications: vec![], birds: vec![], classification_tree: HashMap::new()  }
+    }
+    fn search_bird_by_species(&self, name: String) -> Vec<&Bird> {
+        let mut matched_birds = vec![];
+
+        
+
+        for bird in &self.birds {
+            
+        }
+        matched_birds
     }
     fn search_bird_by_name(&self, name: String) -> Vec<&Bird> {
         let mut matched_birds = vec![];
@@ -120,17 +131,6 @@ impl Collection {
         }
         matched_birds
     }
-    // fn add_or_return_classification_ref(&mut self, classification: Classification) -> &RefCell<Classification> {
-    //     let name = classification.name.clone(); 
-    //     if !self.classifications.iter().any(|c| c.borrow().name == name) {
-    //         self.classifications.push(RefCell::new(classification));
-    //     }
-    
-    //     self.classifications
-    //         .iter()
-    //         .find(|c| c.borrow().name == name)
-    //         .unwrap()
-    // }
     fn add_and_check_for_duplicates_classifications<'a>(&'a mut self, classification: &Classification) -> Option<usize> {
         if !self.classifications.iter().any(|c| c.borrow().name == classification.name) {
             self.classifications.push(RefCell::new(classification.clone()));
@@ -148,17 +148,73 @@ impl Collection {
             }
     }
 }
-fn sort_by_classification(birds: Vec<Bird>) -> Vec<Bird> {
-    let final_birds = vec![];
-    for bird in birds {
-        let acc: HashMap<Classification, usize> = HashMap::new();
-        for unborrowed_classification in bird.parent_nodes {
-            let classification = unborrowed_classification.borrow();
-            
+/// This is by far the most complicated function in all the code and one that took awhile to make, this orginizes 
+/// classifications by frequency, by making a few assumtions that seems to be accurate about the data. Parent Nodes are not arbitrary
+/// Meaning that nodes are bigger in heirarchy if they are more frequently mentioned in all the birds, Second is that there can only be one parent for a child node
+/// which i retrive the order and current name from. (order and amount is frequency).
+fn sort_by_classification(birds: Vec<Bird>) -> HashMap<usize, Vec<Classification>> {
+    // The first thing i do is make a HashMap with a String, which will store the name of classifications and intergers, which will be used per classification to determine how
+    // often it appears in all the birds.
+    let mut acc: HashMap<String, usize> = HashMap::new();
+
+    // I then loop over the birds, then classifications, to count how many times they appear and increment its value in the hashmap
+    for bird in &birds {
+        for classification in &bird.parent_nodes {
+            let name = classification.borrow().name.clone();
+            *acc.entry(name).or_insert(0) += 1;
         }
     }
-    final_birds
+
+    // then I loop over all the birds agin but this time i get all the names of all the classifications of a bird in a loop, then go over the birds parent nodes.
+    for bird in &birds {
+        let parent_names: Vec<String> = bird
+            .parent_nodes
+            .iter()
+            .map(|c| c.borrow().name.clone())
+            .collect();
+
+        for classification_rc in &bird.parent_nodes {
+            let current_name = classification_rc.borrow().name.clone();
+            let order = acc.get(&current_name).copied().unwrap_or(0);
+
+            // Then under potential_parents I look for nodes refrenced more than the current one, and if that
+            // node is in the same array as it in a bird (will not work if they never are in the same array), 
+            // to ensure that there are no bad groupings in a single heirarchy by ensuring that a single heirarchy
+            // covers the bird that is supposed to be a child of it.
+            let potential_parents: Vec<Classification> = bird
+                .parent_nodes
+                .iter()
+                .filter_map(|c| {
+                    let borrowed = c.borrow();
+                    let amount = acc.get(&borrowed.name).copied().unwrap_or(0);
+                    if amount > order && parent_names.contains(&borrowed.name) {
+                        Some(borrowed.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            // Then I simply re-arrange it in the final loop to flip the key and value, and put the actual classifications instead of just a string
+            // and group them so i can get all the nodes at a certain place in the heirachy
+            let mut classification = classification_rc.borrow_mut();
+            for parent in potential_parents {
+                classification.parent_classification = Some(Box::new(parent));
+            }
+        }
+    }
+
+    let mut final_node_tree: HashMap<usize, Vec<Classification>> = HashMap::new();
+    for bird in birds {
+        for classification_refcell in bird.parent_nodes {
+            let classification = classification_refcell.borrow();
+            let amount = acc.get(&classification.name).copied().unwrap_or(0);
+            final_node_tree.entry(amount).or_default().push(classification.clone());
+        }
+    }
+
+    final_node_tree
 }
+
 
 /// Main function, it will run all my code, first thing it does is that it initilizes the collection
 /// Then using fs it will read the birdData json file, (with error handling), captured as a string
@@ -169,8 +225,9 @@ fn main() {
     let mut collection = Collection::new();
     let raw_bird_data: String  = fs::read_to_string("birdData.json").expect("Failed");
     let raw_bird_json: Vec<RawBird> = serde_json::from_str(&raw_bird_data).expect("Incorrect json");
-    let mut final_bird_json: Vec<Bird> = raw_bird_json.iter().map(|bird| Bird::from(bird.clone())).collect();
-    final_bird_json = sort_by_classification(final_bird_json);
+    let final_bird_json: Vec<Bird> = raw_bird_json.iter().map(|bird| Bird::from(bird.clone())).collect();
+    collection.classification_tree = sort_by_classification(final_bird_json.clone());
+    
     collection.birds.extend(final_bird_json.clone());
 
 
@@ -182,7 +239,6 @@ fn main() {
         println!("(a) Addes a bird");
         println!("(p) Prints out all birds");
         println!("(c) prints out all classes");
-        println!("(t) Adds a bird to a class");
         println!("(k) Adds a class");
         println!("(j) Search for a bird by name");
         println!("(m) Searches for a bird by common name");
@@ -227,7 +283,8 @@ fn main() {
                             .iter()
                             .map(|unique_classification| unique_classification.borrow().clone())
                             .filter(|unique_classificaion|
-                                !acc.iter().any(|matching_classification: &Classification| *matching_classification == *unique_classificaion)
+                                !acc.contains(unique_classificaion)
+                                //c.iter().any(|matching_classification: &Classification| matching_classification == unique_classificaion)
                                 )
                                 .collect();
                             acc.extend(unique_refrences);
@@ -235,9 +292,6 @@ fn main() {
                     }).into_iter().map(|classification| classification.name.clone()){
                     println!("{}", classification)
                 }
-            },
-            "t" => {
-                
             },
             "k" => {
                 println!("Whats the name of the species you want to add? (taxaomic grouping");
