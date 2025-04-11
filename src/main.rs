@@ -90,6 +90,7 @@ impl Bird {
 
 /// Collection is everything contained in a single struct, this makes it easier to refer to the data
 /// and to better originize certain functions
+#[derive(Clone)]
 struct Collection {
     classifications: Vec<RefCell<Classification>>,
     classification_tree: HashMap<usize, Vec<Classification>>,
@@ -102,16 +103,41 @@ impl Collection {
     fn new() -> Collection {
         Collection { classifications: vec![], birds: vec![], classification_tree: HashMap::new()  }
     }
+    // This searches the birds by species, 
     fn search_bird_by_species(&self, name: String) -> Vec<&Bird> {
         let mut matched_birds = vec![];
-
-        
-
-        for bird in &self.birds {
-            
+        let mut used_names = std::collections::HashSet::new();
+        let mut nodes: Vec<String> = vec![name.clone()];
+    
+        while let Some(current_name) = nodes.pop() {
+            if !used_names.insert(current_name.clone()) {
+                continue;
+            }
+    
+            for classifications in self.classification_tree.values() {
+                for node in classifications {
+                    if let Some(parent) = &node.parent_classification {
+                        if parent.name == current_name {
+                            nodes.push(node.name.clone());
+                        }
+                    }
+                }
+            }
         }
+    
+        for bird in &self.birds {
+            for classification in &bird.parent_nodes {
+                let name = classification.borrow().name.clone();
+                if used_names.contains(&name) {
+                    matched_birds.push(bird);
+                    break;
+                }
+            }
+        }
+    
         matched_birds
     }
+    
     fn search_bird_by_name(&self, name: String) -> Vec<&Bird> {
         let mut matched_birds = vec![];
         for bird in &self.birds {
@@ -146,6 +172,29 @@ impl Collection {
             } else {
                 None
             }
+    }
+    fn print_classifications(self){
+        // For classifications it is more complicated, since they are within all birds
+        // you have to loop over all birds while avoiding duplicate refrences, you can do this by
+        // using fold, which keeps track of previously iterated parentNode names (within acc)
+        // within fold i made a varible called unique_refrences which will filter unique_classifications for unique refrences
+        // using .any as the check, which just checks if there has been any previous matches with anything in acc
+        // acc is then added with the unique refences, then returned
+        for classification in self.birds.iter().fold(
+            vec![], |mut acc, bird| {
+                let unique_refrences: Vec<Classification> = bird.parent_nodes
+                    .iter()
+                    .map(|unique_classification| unique_classification.borrow().clone())
+                    .filter(|unique_classificaion|
+                        !acc.contains(unique_classificaion)
+                        //c.iter().any(|matching_classification: &Classification| matching_classification == unique_classificaion)
+                        )
+                        .collect();
+                    acc.extend(unique_refrences);
+                    acc
+            }).into_iter().map(|classification| classification.name.clone()){
+            println!("{}", classification)
+        }
     }
 }
 /// This is by far the most complicated function in all the code and one that took awhile to make, this orginizes 
@@ -250,14 +299,25 @@ fn main() {
         match operation.to_lowercase().as_str().trim() {
             "a" => {
                 // For adding birds, it will ask the two questions mentioned, then simply push a newly constructed bird into the collection
-                println!("Whats the name of the bird do you want to add?");
-                let bird_name = ask_question();
-                println!("Whats the scientific name of the bird?");
+                // First thing it does it check if the bird name if under 50 characters long
+                let mut bird_name: String;
+                loop {
+                    println!("Whats the name of the bird do you want to add?");
+                    bird_name = ask_question();
+                    if bird_name.len() > 50 {
+                        println!("Name cannot be longer than 50 characters");
+                        continue
+                    }
+                    break
+                }
+                println!("Whats the common name of the bird?");
                 let bird_common_name = ask_question();
-                let bird_to_add = collection.add_and_check_for_duplicates_bird(Bird::new(bird_name, vec![], bird_common_name));
+
+                let bird_to_add = collection.add_and_check_for_duplicates_bird(Bird::new(bird_name, final_classifications, bird_common_name));
                 if bird_to_add.is_none() {
                     println!("That bird already exists")
                 }
+                
             },
             "p" => {
                 // for printing all the birds, simply loop all of the birds, for printing the final string from the parent_nodes, 
@@ -271,27 +331,8 @@ fn main() {
                 }
             },
             "c" => {
-                // For classifications it is more complicated, since they are within all birds
-                // you have to loop over all birds while avoiding duplicate refrences, you can do this by
-                // using fold, which keeps track of previously iterated parentNode names (within acc)
-                // within fold i made a varible called unique_refrences which will filter unique_classifications for unique refrences
-                // using .any as the check, which just checks if there has been any previous matches with anything in acc
-                // acc is then added with the unique refences, then returned
-                for classification in final_bird_json.iter().fold(
-                    vec![], |mut acc, bird| {
-                        let unique_refrences: Vec<Classification> = bird.parent_nodes
-                            .iter()
-                            .map(|unique_classification| unique_classification.borrow().clone())
-                            .filter(|unique_classificaion|
-                                !acc.contains(unique_classificaion)
-                                //c.iter().any(|matching_classification: &Classification| matching_classification == unique_classificaion)
-                                )
-                                .collect();
-                            acc.extend(unique_refrences);
-                            acc
-                    }).into_iter().map(|classification| classification.name.clone()){
-                    println!("{}", classification)
-                }
+                // I moved this into a function as I use it elsewhere in code and it reduces boilerplate
+                collection.clone().print_classifications();
             },
             "k" => {
                 println!("Whats the name of the species you want to add? (taxaomic grouping");
@@ -324,6 +365,17 @@ fn main() {
                         ))
                 }
             },
+            "l" => {
+                println!("What species are you searching for? (full species name required)");
+                let name = ask_question();
+                let birds = collection.search_bird_by_species(name);
+                for bird in &birds {
+                    println!("name: {}, common name: {}, species: {}", bird.name, bird.common_name, 
+                        String::from_iter(
+                            bird.parent_nodes.iter().map(|node| node.borrow().name.clone() + " ")
+                        ))
+                }
+            }
             "q" => break,
             _ => {
                 println!("Non-existent operation")
