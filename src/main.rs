@@ -313,7 +313,7 @@ fn main() {
                 println!("Whats the common name of the bird?");
                 let bird_common_name = ask_question();
 
-                let bird_to_add = collection.add_and_check_for_duplicates_bird(Bird::new(bird_name, final_classifications, bird_common_name));
+                let bird_to_add = collection.add_and_check_for_duplicates_bird(Bird::new(bird_name, vec![], bird_common_name));
                 if bird_to_add.is_none() {
                     println!("That bird already exists")
                 }
